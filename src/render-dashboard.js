@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
@@ -117,42 +117,85 @@ function formatHotnum(value) {
   return String(n);
 }
 
-async function fetchDouyinHot() {
-  const url = "https://api.juehen.com/hot/douyin.php?type=json";
+async function fetchTextWithTimeout(url, timeoutMs = 7000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { "User-Agent": "kindle-dashboard-pages/0.1" }
+      headers: {
+        "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+        "User-Agent": "kindle-dashboard-pages/0.1 (+https://github.com/maliaxtfws-wq/kindle-dashboard)"
+      }
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    return (json.data || []).slice(0, 3).map((item, index) => ({
-      rank: index + 1,
-      title: item.title || "未知热点",
-      hotnum: formatHotnum(item.hotnum),
-      tag: item.tag || ""
-    }));
-  } catch {
-    try {
-      const raw = await readFile("data/todos.txt", "utf8");
-      return raw.split(/\r?\n/).map((line, index) => ({
-        rank: index + 1,
-        title: line.trim(),
-        hotnum: "--",
-        tag: ""
-      })).filter((item) => item.title).slice(0, 3);
-    } catch {
-      return [
-        { rank: 1, title: "抖音热榜暂不可用", hotnum: "--", tag: "" },
-        { rank: 2, title: "稍后由 GitHub Actions 自动重试", hotnum: "--", tag: "" },
-        { rank: 3, title: "Kindle 仍会显示本机时间", hotnum: "--", tag: "" }
-      ];
-    }
+    return await res.text();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function normalizeHotItems(items, source) {
+  return items
+    .map((item, index) => ({
+      rank: index + 1,
+      title: item.title || item.name || item.word || item.keyword || "未知热点",
+      hotnum: formatHotnum(item.hotnum ?? item.hot ?? item.heat ?? item.views ?? item.score),
+      tag: item.tag || item.label || "",
+      source
+    }))
+    .filter((item) => item.title && item.title !== "未知热点")
+    .slice(0, 3);
+}
+
+function parseJuehenHtml(html, source) {
+  const matches = [...html.matchAll(/class=["'][^"']*keyword[^"']*["'][^>]*>(.*?)<\/[^>]+>/gisu)];
+  const items = matches.map((match) => ({
+    title: match[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()
+  }));
+  return normalizeHotItems(items, source);
+}
+
+async function fetchDouyinHot() {
+  const sources = [
+    {
+      name: "juehen-json",
+      url: "https://api.juehen.com/hot/douyin.php?type=json",
+      parse(text) {
+        const json = JSON.parse(text);
+        return normalizeHotItems(json.data || [], this.name);
+      }
+    },
+    {
+      name: "juehen-html",
+      url: "https://api.juehen.com/hot/douyin.php",
+      parse(text) {
+        return parseJuehenHtml(text, this.name);
+      }
+    }
+  ];
+
+  const errors = [];
+  for (const source of sources) {
+    try {
+      const text = await fetchTextWithTimeout(source.url);
+      const items = source.parse(text);
+      if (items.length >= 3) {
+        console.log(`Douyin hot source: ${source.name}`);
+        return items;
+      }
+      throw new Error(`only ${items.length} usable items`);
+    } catch (error) {
+      errors.push(`${source.name}: ${error.message}`);
+    }
+  }
+
+  console.warn(`Douyin hot unavailable: ${errors.join("; ")}`);
+  return [
+    { rank: 1, title: "抖音热榜暂不可用", hotnum: "--", tag: "", source: "fallback" },
+    { rank: 2, title: "GitHub Actions 将自动重试", hotnum: "--", tag: "", source: "fallback" },
+    { rank: 3, title: "Kindle 时间仍每分钟刷新", hotnum: "--", tag: "", source: "fallback" }
+  ];
 }
 
 function wrapText(text, maxChars = 21) {
@@ -193,7 +236,7 @@ async function renderSvg() {
     `;
   }).join("");
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
   <style>
     text { font-family: "Noto Sans CJK SC", "Noto Sans CJK", "Microsoft YaHei", "Noto Sans", Arial, sans-serif; fill: #111; letter-spacing: 0; }
@@ -223,15 +266,24 @@ async function renderSvg() {
   <line x1="52" y1="928" x2="706" y2="928" stroke="#111" stroke-width="3"/>
   <text x="52" y="967" class="footer">热榜云端约每 5 分钟更新 · 时间由 Kindle 本机每分钟刷新</text>
 </svg>`;
+
+  return { svg, hotItems };
 }
 
 async function build() {
   await mkdir(OUT_DIR, { recursive: true });
-  const svg = await renderSvg();
+  const { svg, hotItems } = await renderSvg();
   const png = await sharp(Buffer.from(svg)).resize(WIDTH, HEIGHT, { fit: "fill" }).grayscale().png({ compressionLevel: 9 }).toBuffer();
   await writeFile(path.join(OUT_DIR, "dashboard.svg"), svg);
   await writeFile(path.join(OUT_DIR, "dashboard.png"), png);
-  await writeFile(path.join(OUT_DIR, "latest.json"), JSON.stringify({ generatedAt: new Date().toISOString(), timezone: TZ, city: CITY_LABEL, size: [WIDTH, HEIGHT] }, null, 2));
+  await writeFile(path.join(OUT_DIR, "latest.json"), JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    timezone: TZ,
+    city: CITY_LABEL,
+    size: [WIDTH, HEIGHT],
+    hotSource: hotItems[0]?.source || "unknown",
+    hotTitles: hotItems.map((item) => item.title)
+  }, null, 2));
   await writeFile(path.join(OUT_DIR, ".nojekyll"), "");
   await writeFile(path.join(OUT_DIR, "index.html"), `<!doctype html>
 <meta charset="utf-8">
