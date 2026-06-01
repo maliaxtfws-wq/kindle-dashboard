@@ -273,7 +273,12 @@ async function renderSvg() {
 async function build() {
   await mkdir(OUT_DIR, { recursive: true });
   const { svg, hotItems } = await renderSvg();
-  const png = await sharp(Buffer.from(svg)).resize(WIDTH, HEIGHT, { fit: "fill" }).grayscale().png({ compressionLevel: 9 }).toBuffer();
+  const png = await sharp(Buffer.from(svg))
+    .resize(WIDTH, HEIGHT, { fit: "fill" })
+    .flatten({ background: "#fff" })
+    .grayscale()
+    .png({ compressionLevel: 9 })
+    .toBuffer();
   await writeFile(path.join(OUT_DIR, "dashboard.svg"), svg);
   await writeFile(path.join(OUT_DIR, "dashboard.png"), png);
   await writeFile(path.join(OUT_DIR, "latest.json"), JSON.stringify({
