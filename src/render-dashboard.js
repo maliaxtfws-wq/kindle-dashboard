@@ -45,15 +45,6 @@ function partsFor(now) {
   };
 }
 
-async function loadTodos() {
-  try {
-    const raw = await readFile("data/todos.txt", "utf8");
-    return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 6);
-  } catch {
-    return ["Kindle Dash 已上线", "编辑 data/todos.txt 更新这里", "保持 Kindle 连接 Wi-Fi"];
-  }
-}
-
 const weatherNames = {
   113: "晴",
   116: "多云",
@@ -118,6 +109,52 @@ async function fetchWeather() {
   }
 }
 
+function formatHotnum(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "--";
+  if (n >= 100000000) return `${(n / 100000000).toFixed(1)}亿`;
+  if (n >= 10000) return `${Math.round(n / 10000)}万`;
+  return String(n);
+}
+
+async function fetchDouyinHot() {
+  const url = "https://api.juehen.com/hot/douyin.php?type=json";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "kindle-dashboard-pages/0.1" }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return (json.data || []).slice(0, 3).map((item, index) => ({
+      rank: index + 1,
+      title: item.title || "未知热点",
+      hotnum: formatHotnum(item.hotnum),
+      tag: item.tag || ""
+    }));
+  } catch {
+    try {
+      const raw = await readFile("data/todos.txt", "utf8");
+      return raw.split(/\r?\n/).map((line, index) => ({
+        rank: index + 1,
+        title: line.trim(),
+        hotnum: "--",
+        tag: ""
+      })).filter((item) => item.title).slice(0, 3);
+    } catch {
+      return [
+        { rank: 1, title: "抖音热榜暂不可用", hotnum: "--", tag: "" },
+        { rank: 2, title: "稍后由 GitHub Actions 自动重试", hotnum: "--", tag: "" },
+        { rank: 3, title: "Kindle 仍会显示本机时间", hotnum: "--", tag: "" }
+      ];
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function wrapText(text, maxChars = 21) {
   const lines = [];
   let current = "";
@@ -142,16 +179,17 @@ function section(x, y, w, h, title, body) {
 
 async function renderSvg() {
   const now = new Date();
-  const { time, date } = partsFor(now);
+  const { date } = partsFor(now);
   const weather = await fetchWeather();
-  const todos = await loadTodos();
-  const todoRows = todos.map((todo, idx) => {
-    const y = 641 + idx * 48;
-    const lines = wrapText(todo);
+  const hotItems = await fetchDouyinHot();
+  const hotRows = hotItems.map((item, idx) => {
+    const y = 668 + idx * 68;
+    const lines = wrapText(item.title, 14);
     return `
-      <circle cx="80" cy="${y - 8}" r="7" fill="#111"/>
-      <text x="104" y="${y}" class="todo">${esc(lines[0])}</text>
-      ${lines[1] ? `<text x="104" y="${y + 30}" class="todo small">${esc(lines[1])}</text>` : ""}
+      <text x="74" y="${y}" class="rank">${item.rank}</text>
+      <text x="120" y="${y}" class="hot">${esc(lines[0])}</text>
+      ${lines[1] ? `<text x="120" y="${y + 32}" class="hot small">${esc(lines[1])}</text>` : ""}
+      <text x="560" y="${y}" class="hotnum">${esc(item.hotnum)}${item.tag ? ` · ${esc(item.tag)}` : ""}</text>
     `;
   }).join("");
 
@@ -166,24 +204,24 @@ async function renderSvg() {
     .weather-temp { font-size: 92px; font-weight: 800; }
     .weather-desc { font-size: 34px; font-weight: 800; }
     .metric { font-size: 24px; font-weight: 650; }
-    .todo { font-size: 28px; font-weight: 700; }
-    .todo.small { font-size: 22px; font-weight: 500; }
+    .rank { font-size: 34px; font-weight: 900; }
+    .hot { font-size: 27px; font-weight: 800; }
+    .hot.small { font-size: 22px; font-weight: 600; }
+    .hotnum { font-size: 20px; font-weight: 700; }
     .footer { font-size: 21px; font-weight: 500; }
   </style>
   <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#fff"/>
   <text x="52" y="66" class="kicker">${esc(TITLE)} · KINDLE DASH</text>
   <line x1="52" y1="92" x2="706" y2="92" stroke="#111" stroke-width="4"/>
-  <text x="44" y="260" class="time">${esc(time)}</text>
-  <text x="58" y="322" class="date">${esc(date)}</text>
   ${section(50, 372, 658, 170, "天气", `
     <text x="76" y="501" class="weather-temp">${esc(weather.temp)}</text>
     <text x="264" y="462" class="weather-desc">${esc(weather.city)} · ${esc(weather.desc)}</text>
     <text x="264" y="503" class="metric">体感 ${esc(weather.feels)}  湿度 ${esc(weather.humidity)}</text>
     <text x="264" y="535" class="metric">风速 ${esc(weather.wind)}  低/高 ${esc(weather.hiLo)}</text>
   `)}
-  ${section(50, 574, 658, 310, "今天", todoRows)}
+  ${section(50, 574, 658, 310, "抖音热榜 TOP3", hotRows)}
   <line x1="52" y1="928" x2="706" y2="928" stroke="#111" stroke-width="3"/>
-  <text x="52" y="967" class="footer">GitHub Pages 云端生成 · 约每 10 分钟刷新</text>
+  <text x="52" y="967" class="footer">热榜云端约每 5 分钟更新 · 时间由 Kindle 本机每分钟刷新</text>
 </svg>`;
 }
 

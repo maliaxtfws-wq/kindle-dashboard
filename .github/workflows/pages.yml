@@ -3,7 +3,7 @@ name: Build Kindle Dashboard
 on:
   workflow_dispatch:
   schedule:
-    - cron: "2/10 * * * *"
+    - cron: "*/5 * * * *"
   push:
     branches:
       - main
