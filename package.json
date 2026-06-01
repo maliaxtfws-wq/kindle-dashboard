@@ -1,0 +1,12 @@
+{
+  "name": "kindle-dashboard-pages",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node src/render-dashboard.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  }
+}
